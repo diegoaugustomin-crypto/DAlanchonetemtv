@@ -142,7 +142,7 @@ th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;}
       <div id="pd-itens"></div>
       <div class="total-line"><span>Total</span><span id="pd-total">R$ 0,00</span></div>
       <div class="row" style="margin-top:12px">
-        <button class="btn-primary" onclick="enviarPedido()">Enviar para cozinha e caixa</button>
+        <button class="btn-primary" onclick="enviarPedido()">Enviar pedido (separa cozinha/balcão automaticamente)</button>
       </div>
     </div>
     <div class="card">
@@ -153,8 +153,15 @@ th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;}
 
   <div id="view-cozinha" class="view">
     <div class="card">
-      <h2>Fila da cozinha</h2>
+      <h2>Fila da cozinha (alimentos)</h2>
       <div id="cz-lista"></div>
+    </div>
+  </div>
+
+  <div id="view-balcao" class="view">
+    <div class="card">
+      <h2>Fila do balcão (bebidas)</h2>
+      <div id="bc-lista"></div>
     </div>
   </div>
 
@@ -167,7 +174,7 @@ th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;}
 
   <div id="view-caixa" class="view">
     <div class="card">
-      <h2>Comandas para cobrança</h2>
+      <h2>Contas para fechar</h2>
       <div id="cx-lista"></div>
     </div>
   </div>
@@ -210,6 +217,11 @@ th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;}
         <div><label>Nome do produto</label><input id="cp-nome" type="text"></div>
         <div><label>Preço de venda (R$)</label><input id="cp-preco" type="number" step="0.01"></div>
       </div>
+      <label>Categoria (define para onde o pedido é enviado)</label>
+      <select id="cp-categoria">
+        <option value="alimento">🍳 Alimento (vai para a Cozinha)</option>
+        <option value="bebida">🥤 Bebida (vai para o Balcão)</option>
+      </select>
       <label>Ficha técnica (insumos consumidos por unidade vendida)</label>
       <div id="cp-ficha"></div>
       <div class="row">
@@ -317,6 +329,7 @@ function getSecondaryAuth(){
 const PERMS = [
   {key:'pedidos', label:'Pedidos'},
   {key:'cozinha', label:'Cozinha'},
+  {key:'balcao', label:'Balcão'},
   {key:'retirada', label:'Retirada'},
   {key:'caixa', label:'Caixa'},
   {key:'financeiro', label:'Financeiro'},
@@ -326,6 +339,7 @@ const PERMS = [
 const TABS = [
   {id:'pedidos', label:'🧾 Pedidos', perm:'pedidos'},
   {id:'cozinha', label:'🍳 Cozinha', perm:'cozinha'},
+  {id:'balcao', label:'🥤 Balcão', perm:'balcao'},
   {id:'retirada', label:'📱 Retirada', perm:'retirada'},
   {id:'caixa', label:'💵 Caixa', perm:'caixa'},
   {id:'financeiro', label:'📊 Financeiro', perm:'financeiro'},
@@ -353,6 +367,42 @@ function togglePwd(id, btn){
 }
 function brl(v){ return (v||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'}); }
 function todayKey(){ return new Date().toISOString().slice(0,10); }
+
+let audioCtx = null;
+function tocarAlarme(){
+  try{
+    if(!audioCtx) audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+    const tocarBeep = (tStart, freq)=>{
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sine'; osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, tStart);
+      gain.gain.exponentialRampToValueAtTime(0.35, tStart+0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, tStart+0.28);
+      osc.connect(gain); gain.connect(audioCtx.destination);
+      osc.start(tStart); osc.stop(tStart+0.3);
+    };
+    const now = audioCtx.currentTime;
+    tocarBeep(now, 880); tocarBeep(now+0.35, 880);
+  }catch(e){ console.error(e); }
+}
+let pedidosCarregados = false;
+let avisados = new Set();
+function checarNovosProntos(lista){
+  const prontosAgora = lista.filter(p=>p.status==='pronto');
+  if(!pedidosCarregados){
+    prontosAgora.forEach(p=>avisados.add(p.id));
+    pedidosCarregados = true;
+    return;
+  }
+  const novos = prontosAgora.filter(p=>!avisados.has(p.id));
+  if(novos.length){
+    tocarAlarme();
+    const nomes = [...new Set(novos.map(p=>p.mesa))].join(', ');
+    toast('🔔 Pedido pronto: ' + nomes);
+  }
+  prontosAgora.forEach(p=>avisados.add(p.id));
+}
 
 /* ---------------- AUTENTICAÇÃO ---------------- */
 auth.onAuthStateChanged(async user=>{
@@ -430,7 +480,7 @@ function onCacheUpdate(cacheKey){
   if(cacheKey==='usuarios') renderAdmin();
   if(cacheKey==='cardapio'){ renderCardapioSelect(); renderCardapioLista(); }
   if(cacheKey==='insumos') renderInsumos();
-  if(cacheKey==='pedidos'){ renderPedidos(); renderCozinha(); renderRetirada(); renderCaixa(); renderFinanceiro(); }
+  if(cacheKey==='pedidos'){ renderPedidos(); renderCozinha(); renderBalcao(); renderRetirada(); renderCaixa(); renderFinanceiro(); checarNovosProntos(cache.pedidos); }
   if(cacheKey==='caixas') renderFinanceiro();
   if(cacheKey==='perdas'){ renderPerdas(); renderFinanceiro(); }
 }
@@ -486,20 +536,20 @@ async function salvarTaxas(){
 /* ---------------- PEDIDOS ---------------- */
 function renderCardapioSelect(){
   const sel = document.getElementById('pd-produto');
-  sel.innerHTML = cache.cardapio.map(p=>`<option value="${p.id}">${p.nome} - ${brl(p.preco)}</option>`).join('') || '<option value="">Nenhum produto cadastrado</option>';
+  sel.innerHTML = cache.cardapio.map(p=>`<option value="${p.id}">${p.categoria==='bebida'?'🥤':'🍳'} ${p.nome} - ${brl(p.preco)}</option>`).join('') || '<option value="">Nenhum produto cadastrado</option>';
 }
 function addItemComanda(){
   const sel = document.getElementById('pd-produto');
   const qtd = parseFloat(document.getElementById('pd-qtd').value) || 1;
   const prod = cache.cardapio.find(p=>p.id===sel.value);
   if(!prod){ toast('Cadastre produtos no Estoque primeiro.'); return; }
-  comandaAtual.push({produto_id:prod.id, nome:prod.nome, preco:prod.preco, qtd, ficha_tecnica: prod.ficha_tecnica||[]});
+  comandaAtual.push({produto_id:prod.id, nome:prod.nome, preco:prod.preco, qtd, categoria: prod.categoria||'alimento', ficha_tecnica: prod.ficha_tecnica||[]});
   renderComandaAtual();
 }
 function renderComandaAtual(){
   const el = document.getElementById('pd-itens');
   el.innerHTML = comandaAtual.map((it,i)=>`
-    <div class="comanda-item"><span>${it.qtd}x ${it.nome} — ${brl(it.preco*it.qtd)}</span><button onclick="removeItemComanda(${i})">✕</button></div>
+    <div class="comanda-item"><span>${it.categoria==='bebida'?'🥤':'🍳'} ${it.qtd}x ${it.nome} — ${brl(it.preco*it.qtd)}</span><button onclick="removeItemComanda(${i})">✕</button></div>
   `).join('');
   const total = comandaAtual.reduce((s,it)=>s+it.preco*it.qtd,0);
   document.getElementById('pd-total').textContent = brl(total);
@@ -510,25 +560,34 @@ async function enviarPedido(){
   if(!comandaAtual.length){ toast('Adicione ao menos um item.'); return; }
   const caixaAberto = cache.caixas.find(c=>c.status==='aberto');
   if(!caixaAberto){ toast('Abra o caixa no módulo Financeiro antes de lançar pedidos.'); return; }
-  const total = comandaAtual.reduce((s,it)=>s+it.preco*it.qtd,0);
   const mesa = document.getElementById('pd-mesa').value.trim() || 'Balcão';
-  const pedido = {
-    mesa, itens: comandaAtual, total, status:'pendente', pago:false,
-    caixa_id: caixaAberto.id, criado_em: new Date().toISOString(), criado_por: currentUser.id
-  };
+  const grupo_id = 'g_' + Date.now() + '_' + Math.random().toString(36).slice(2,7);
+  const criado_em = new Date().toISOString();
+  const itensCozinha = comandaAtual.filter(it=>it.categoria!=='bebida');
+  const itensBalcao = comandaAtual.filter(it=>it.categoria==='bebida');
+  const docs = [];
+  if(itensCozinha.length) docs.push({local:'cozinha', itens:itensCozinha, total:itensCozinha.reduce((s,it)=>s+it.preco*it.qtd,0)});
+  if(itensBalcao.length) docs.push({local:'balcao', itens:itensBalcao, total:itensBalcao.reduce((s,it)=>s+it.preco*it.qtd,0)});
   try{
-    await dbf.collection('pedidos').add(pedido);
-    imprimirComanda(pedido);
+    for(const d of docs){
+      const pedido = {
+        mesa, itens:d.itens, total:d.total, local:d.local, status:'pendente', pago:false,
+        grupo_id, caixa_id: caixaAberto.id, criado_em, criado_por: currentUser.id
+      };
+      await dbf.collection('pedidos').add(pedido);
+      imprimirComanda(pedido);
+    }
     comandaAtual = []; document.getElementById('pd-mesa').value='';
     renderComandaAtual();
-    toast('Pedido enviado para a cozinha e para o caixa.');
+    toast('Pedido enviado' + (docs.length>1 ? ' (cozinha + balcão).' : '.'));
   }catch(e){ console.error(e); toast('Erro ao enviar pedido.'); }
 }
 function imprimirComanda(p){
   const area = document.getElementById('print-area');
   const cfg = cache.config.impressora || {cabecalho:'DALanchonete', largura:'80mm', rodape:''};
   area.style.width = cfg.largura;
-  area.innerHTML = `<h2>${cfg.cabecalho}</h2><p><b>${p.mesa}</b> — ${new Date(p.criado_em).toLocaleString('pt-BR')}</p><hr>` +
+  const destino = p.local==='balcao' ? 'BALCÃO' : 'COZINHA';
+  area.innerHTML = `<h2>${cfg.cabecalho}</h2><p><b>${p.mesa}</b> — ${destino} — ${new Date(p.criado_em).toLocaleString('pt-BR')}</p><hr>` +
     p.itens.map(it=>`<div>${it.qtd}x ${it.nome} — ${brl(it.preco*it.qtd)}</div>`).join('') +
     `<hr><b>Total: ${brl(p.total)}</b>` +
     (cfg.rodape ? `<p style="margin-top:10px">${cfg.rodape}</p>` : '');
@@ -538,16 +597,16 @@ function renderPedidos(){
   const el = document.getElementById('pd-lista');
   const abertos = cache.pedidos.filter(p=>p.status!=='entregue' || !p.pago);
   if(!abertos.length){ el.innerHTML = '<div class="empty">Nenhuma comanda em aberto.</div>'; return; }
-  el.innerHTML = '<table><tr><th>Mesa</th><th>Itens</th><th>Total</th><th>Status</th><th>Pgto</th></tr>' +
-    abertos.map(p=>`<tr><td>${p.mesa}</td><td>${p.itens.length} item(ns)</td><td>${brl(p.total)}</td>
+  el.innerHTML = '<table><tr><th>Mesa</th><th>Local</th><th>Itens</th><th>Total</th><th>Status</th><th>Pgto</th></tr>' +
+    abertos.map(p=>`<tr><td>${p.mesa}</td><td>${p.local==='balcao'?'🥤 Balcão':'🍳 Cozinha'}</td><td>${p.itens.length} item(ns)</td><td>${brl(p.total)}</td>
       <td><span class="pill pill-${p.status}">${p.status}</span></td>
       <td>${p.pago?'<span class="pill pill-pago">pago</span>':'—'}</td></tr>`).join('') + '</table>';
 }
 
-/* ---------------- COZINHA ---------------- */
-function renderCozinha(){
-  const el = document.getElementById('cz-lista');
-  const fila = cache.pedidos.filter(p=>p.status==='pendente' || p.status==='preparo');
+/* ---------------- COZINHA / BALCÃO ---------------- */
+function renderFilaPreparo(elId, local){
+  const el = document.getElementById(elId);
+  const fila = cache.pedidos.filter(p=>p.local===local && (p.status==='pendente' || p.status==='preparo'));
   if(!fila.length){ el.innerHTML = '<div class="empty">Fila vazia.</div>'; return; }
   el.innerHTML = fila.map(p=>`
     <div class="card" style="margin-bottom:8px">
@@ -561,6 +620,8 @@ function renderCozinha(){
       </div>
     </div>`).join('');
 }
+function renderCozinha(){ renderFilaPreparo('cz-lista', 'cozinha'); }
+function renderBalcao(){ renderFilaPreparo('bc-lista', 'balcao'); }
 async function atualizarStatus(id, status){
   try{ await dbf.collection('pedidos').doc(id).update({status}); toast('Status atualizado.'); }
   catch(e){ console.error(e); toast('Erro ao atualizar.'); }
@@ -573,40 +634,50 @@ function renderRetirada(){
   if(!prontos.length){ el.innerHTML = '<div class="empty">Nada pronto para retirada no momento.</div>'; return; }
   el.innerHTML = prontos.map(p=>`
     <div class="card" style="margin-bottom:8px">
-      <div class="row" style="justify-content:space-between"><b>${p.mesa}</b><span class="pill pill-pronto">pronto</span></div>
+      <div class="row" style="justify-content:space-between"><b>${p.mesa}</b> <span class="pill pill-pronto">pronto — ${p.local==='balcao'?'balcão':'cozinha'}</span></div>
       ${p.itens.map(it=>`<div>${it.qtd}x ${it.nome}</div>`).join('')}
       <button class="btn-primary btn-sm" style="margin-top:8px" onclick="atualizarStatus('${p.id}','entregue')">Confirmar retirada</button>
     </div>`).join('');
 }
 
-/* ---------------- CAIXA / FINALIZAÇÃO ---------------- */
+/* ---------------- CAIXA / FECHAMENTO DE CONTA EM LOTE ---------------- */
 function renderCaixa(){
   const el = document.getElementById('cx-lista');
   const pendentes = cache.pedidos.filter(p=>!p.pago);
-  if(!pendentes.length){ el.innerHTML = '<div class="empty">Nenhuma comanda pendente de pagamento.</div>'; return; }
-  el.innerHTML = pendentes.map(p=>`
+  if(!pendentes.length){ el.innerHTML = '<div class="empty">Nenhuma conta pendente.</div>'; return; }
+  const grupos = {};
+  pendentes.forEach(p=>{ const g = p.grupo_id || p.id; (grupos[g] = grupos[g]||[]).push(p); });
+  el.innerHTML = Object.entries(grupos).map(([g, peds])=>{
+    const mesa = peds[0].mesa;
+    const total = peds.reduce((s,p)=>s+p.total,0);
+    const todosItens = peds.flatMap(p=>p.itens);
+    return `
     <div class="card" style="margin-bottom:8px">
-      <div class="row" style="justify-content:space-between"><b>${p.mesa}</b><span>${brl(p.total)}</span></div>
-      ${p.itens.map(it=>`<div>${it.qtd}x ${it.nome}</div>`).join('')}
+      <div class="row" style="justify-content:space-between"><b>${mesa}</b><span>${brl(total)}</span></div>
+      ${todosItens.map(it=>`<div>${it.qtd}x ${it.nome}</div>`).join('')}
       <div class="row" style="margin-top:8px">
-        <select id="fp-${p.id}" style="width:auto;margin-bottom:0">
+        <select id="fp-${g}" style="width:auto;margin-bottom:0">
           <option value="dinheiro">Dinheiro</option><option value="credito">Cartão crédito</option><option value="debito">Cartão débito</option><option value="pix">Pix</option>
         </select>
-        <button class="btn-primary btn-sm" onclick="finalizarPagamento('${p.id}')">Finalizar / receber</button>
+        <button class="btn-primary btn-sm" onclick="fecharConta('${g}')">💰 Fechar conta</button>
       </div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 }
-async function finalizarPagamento(id){
-  const pedido = cache.pedidos.find(p=>p.id===id);
-  if(!pedido) return;
-  const forma = document.getElementById('fp-'+id).value;
+async function fecharConta(grupoId){
+  const peds = cache.pedidos.filter(p=>(p.grupo_id||p.id)===grupoId && !p.pago);
+  if(!peds.length) return;
+  const forma = document.getElementById('fp-'+grupoId).value;
   const taxaPct = (cache.config.taxas && cache.config.taxas[forma]) || 0;
-  const valor_liquido = pedido.total * (1 - taxaPct/100);
+  const pago_em = new Date().toISOString();
   try{
-    await dbf.collection('pedidos').doc(id).update({pago:true, forma_pagamento:forma, taxa_aplicada:taxaPct, valor_liquido, pago_em:new Date().toISOString()});
-    await baixarEstoquePedido(pedido);
-    toast('Pagamento confirmado e estoque atualizado.');
-  }catch(e){ console.error(e); toast('Erro ao finalizar.'); }
+    for(const pedido of peds){
+      const valor_liquido = pedido.total * (1 - taxaPct/100);
+      await dbf.collection('pedidos').doc(pedido.id).update({pago:true, forma_pagamento:forma, taxa_aplicada:taxaPct, valor_liquido, pago_em});
+      await baixarEstoquePedido(pedido);
+    }
+    toast('Conta fechada e estoque atualizado.');
+  }catch(e){ console.error(e); toast('Erro ao fechar conta.'); }
 }
 async function baixarEstoquePedido(pedido){
   for(const item of pedido.itens){
@@ -775,9 +846,10 @@ function renderFichaAtual(){
 async function salvarProduto(){
   const nome = document.getElementById('cp-nome').value.trim();
   const preco = parseFloat(document.getElementById('cp-preco').value);
+  const categoria = document.getElementById('cp-categoria').value;
   if(!nome || !preco){ toast('Informe nome e preço.'); return; }
   try{
-    await dbf.collection('cardapio').add({nome, preco, ficha_tecnica: fichaAtual, criado_em:new Date().toISOString()});
+    await dbf.collection('cardapio').add({nome, preco, categoria, ficha_tecnica: fichaAtual, criado_em:new Date().toISOString()});
     document.getElementById('cp-nome').value=''; document.getElementById('cp-preco').value='';
     fichaAtual = []; renderFichaAtual();
     toast('Produto salvo.');
@@ -786,12 +858,13 @@ async function salvarProduto(){
 function renderCardapioLista(){
   const el = document.getElementById('cp-lista');
   if(!cache.cardapio.length){ el.innerHTML = '<div class="empty">Nenhum produto cadastrado.</div>'; return; }
-  el.innerHTML = '<table><tr><th>Produto</th><th>Preço</th><th>Ficha técnica</th><th></th></tr>' +
-    cache.cardapio.map(p=>`<tr><td>${p.nome}</td><td>${brl(p.preco)}</td>
+  el.innerHTML = '<table><tr><th>Produto</th><th>Categoria</th><th>Preço</th><th>Ficha técnica</th><th></th></tr>' +
+    cache.cardapio.map(p=>`<tr><td>${p.nome}</td><td>${p.categoria==='bebida'?'🥤 Bebida':'🍳 Alimento'}</td><td>${brl(p.preco)}</td>
       <td>${(p.ficha_tecnica||[]).map(f=>`${f.qtd} ${f.nome}`).join(', ') || '—'}</td>
       <td><button class="btn-danger btn-sm" onclick="excluirProduto('${p.id}')">Excluir</button></td></tr>`).join('') + '</table>';
 }
 async function excluirProduto(id){ try{ await dbf.collection('cardapio').doc(id).delete(); }catch(e){ console.error(e); } }
+
 
 async function registrarPerda(){
   const sel = document.getElementById('pr-insumo');
