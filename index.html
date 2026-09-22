@@ -39,6 +39,8 @@ input,select{font-family:inherit;}
 #login-screen{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;}
 .login-box{background:var(--card);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow);padding:32px 28px;width:100%;max-width:360px;text-align:center;}
 .login-box h1{font-size:22px;margin:0 0 4px;}
+#login-logo{max-width:180px;max-height:80px;margin:0 auto 10px;display:block;}
+header.topbar .brand-logo{height:28px;max-width:160px;vertical-align:middle;margin-right:8px;}
 .login-box p{color:var(--muted);font-size:13px;margin:0 0 20px;}
 .login-box input{width:100%;padding:11px 12px;margin-bottom:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:14px;}
 .pwd-wrap{position:relative;}
@@ -107,7 +109,8 @@ th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;}
 
 <div id="login-screen">
   <div class="login-box">
-    <h1>DALanchonete</h1>
+    <img id="login-logo" class="hidden" alt="Logo">
+    <h1 id="login-titulo">DALanchonete</h1>
     <p>Entre com seu usuário e senha</p>
     <input id="login-user" type="text" placeholder="Usuário" autocomplete="username">
     <div class="pwd-wrap">
@@ -122,7 +125,7 @@ th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;}
 
 <div id="app" class="hidden">
   <header class="topbar">
-    <h1>🍔 DALanchonete</h1>
+    <h1 id="app-titulo">🍔 DALanchonete</h1>
     <div class="userchip"><span id="who"></span><button onclick="doLogout()">Sair</button></div>
   </header>
 
@@ -264,6 +267,20 @@ th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;}
     </div>
 
     <div class="card">
+      <h2>Marca do sistema</h2>
+      <p style="font-size:12px;color:var(--muted);margin-top:-6px">Aparece na tela de login e no topo do sistema. Ideal: logo com fundo transparente, até ~200KB.</p>
+      <div class="grid2">
+        <div><label>Nome do sistema</label><input id="mk-nome" type="text" placeholder="DALanchonete"></div>
+        <div><label>Logo (imagem)</label><input id="mk-arquivo" type="file" accept="image/*"></div>
+      </div>
+      <div class="row" style="margin-bottom:10px">
+        <img id="mk-preview" class="hidden" style="max-height:60px;max-width:200px;border:1px solid var(--border);border-radius:8px;padding:4px">
+        <button type="button" class="btn-secondary btn-sm" id="mk-remover" onclick="removerLogo()" style="display:none">Remover logo</button>
+      </div>
+      <button class="btn-primary" onclick="salvarMarca()">Salvar marca</button>
+    </div>
+
+    <div class="card">
       <h2>Configuração da impressora</h2>
       <div class="grid2">
         <div><label>Nome/cabeçalho impresso</label><input id="cf-cabecalho" type="text" placeholder="DALanchonete"></div>
@@ -350,7 +367,7 @@ const TABS = [
 let currentUser = null;
 let unsub = [];
 let cache = {usuarios:[], cardapio:[], insumos:[], pedidos:[], caixas:[], perdas:[],
-  config: {taxas:{dinheiro:0, credito:0, debito:0, pix:0}, impressora:{cabecalho:'DALanchonete', largura:'80mm', rodape:''}}};
+  config: {taxas:{dinheiro:0, credito:0, debito:0, pix:0}, impressora:{cabecalho:'DALanchonete', largura:'80mm', rodape:''}, marca:{nome:'DALanchonete', logoUrl:''}}};
 let comandaAtual = [];
 let fichaAtual = [];
 
@@ -403,6 +420,32 @@ function checarNovosProntos(lista){
   }
   prontosAgora.forEach(p=>avisados.add(p.id));
 }
+
+/* ---------------- MARCA (logo/nome customizável) ---------------- */
+function aplicarMarca(marca){
+  cache.config.marca = marca;
+  document.title = marca.nome + ' - Sistema PDV';
+  const loginLogo = document.getElementById('login-logo');
+  const loginTitulo = document.getElementById('login-titulo');
+  const appTitulo = document.getElementById('app-titulo');
+  if(marca.logoUrl){
+    loginLogo.src = marca.logoUrl; loginLogo.classList.remove('hidden');
+    loginTitulo.classList.add('hidden');
+    appTitulo.innerHTML = `<img class="brand-logo" src="${marca.logoUrl}" alt="Logo">${marca.nome}`;
+  } else {
+    loginLogo.classList.add('hidden');
+    loginTitulo.classList.remove('hidden'); loginTitulo.textContent = marca.nome;
+    appTitulo.textContent = '🍔 ' + marca.nome;
+  }
+}
+async function carregarMarcaPublica(){
+  try{
+    const snap = await dbf.collection('configuracoes').doc('geral').get();
+    const d = snap.exists ? snap.data() : {};
+    aplicarMarca(Object.assign({nome:'DALanchonete', logoUrl:''}, d.marca||{}));
+  }catch(e){ console.error(e); }
+}
+carregarMarcaPublica();
 
 /* ---------------- AUTENTICAÇÃO ---------------- */
 auth.onAuthStateChanged(async user=>{
@@ -495,8 +538,10 @@ function subscribeAll(){
     const d = snap.exists ? snap.data() : {};
     cache.config = {
       taxas: Object.assign({dinheiro:0, credito:0, debito:0, pix:0}, d.taxas||{}),
-      impressora: Object.assign({cabecalho:'DALanchonete', largura:'80mm', rodape:''}, d.impressora||{})
+      impressora: Object.assign({cabecalho:'DALanchonete', largura:'80mm', rodape:''}, d.impressora||{}),
+      marca: Object.assign({nome:'DALanchonete', logoUrl:''}, d.marca||{})
     };
+    aplicarMarca(cache.config.marca);
     renderConfigForm();
   }, err=>console.error(err));
   unsub.push(unsubscribeConfig);
@@ -511,7 +556,45 @@ function renderConfigForm(){
     document.getElementById('tx-credito').value = c.taxas.credito;
     document.getElementById('tx-debito').value = c.taxas.debito;
     document.getElementById('tx-pix').value = c.taxas.pix;
+    document.getElementById('mk-nome').value = c.marca.nome;
+    const prev = document.getElementById('mk-preview');
+    const remBtn = document.getElementById('mk-remover');
+    if(c.marca.logoUrl){ prev.src = c.marca.logoUrl; prev.classList.remove('hidden'); remBtn.style.display='inline-block'; }
+    else{ prev.classList.add('hidden'); remBtn.style.display='none'; }
   }
+}
+let logoSelecionada = null;
+document.addEventListener('change', function(e){
+  if(e.target && e.target.id==='mk-arquivo'){
+    const file = e.target.files[0];
+    if(!file) return;
+    if(file.size > 400*1024){ toast('Imagem muito grande, escolha um arquivo menor que 400KB.'); e.target.value=''; return; }
+    const reader = new FileReader();
+    reader.onload = ev=>{
+      logoSelecionada = ev.target.result;
+      const prev = document.getElementById('mk-preview');
+      prev.src = logoSelecionada; prev.classList.remove('hidden');
+      document.getElementById('mk-remover').style.display='inline-block';
+    };
+    reader.readAsDataURL(file);
+  }
+});
+async function salvarMarca(){
+  const nome = document.getElementById('mk-nome').value.trim() || 'DALanchonete';
+  const marca = { nome, logoUrl: logoSelecionada!=null ? logoSelecionada : (cache.config.marca.logoUrl||'') };
+  try{
+    await dbf.collection('configuracoes').doc('geral').set({marca}, {merge:true});
+    logoSelecionada = null;
+    toast('Marca salva.');
+  }catch(e){ console.error(e); toast('Erro ao salvar. Só admin pode alterar.'); }
+}
+async function removerLogo(){
+  try{
+    await dbf.collection('configuracoes').doc('geral').set({marca:{nome: document.getElementById('mk-nome').value.trim()||'DALanchonete', logoUrl:''}}, {merge:true});
+    logoSelecionada = null;
+    document.getElementById('mk-arquivo').value = '';
+    toast('Logo removida.');
+  }catch(e){ console.error(e); toast('Erro ao remover.'); }
 }
 async function salvarConfigImpressora(){
   const impressora = {
