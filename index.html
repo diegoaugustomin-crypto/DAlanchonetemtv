@@ -196,6 +196,42 @@ th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;}
       <h3>Vendas por forma de pagamento (mês)</h3>
       <div id="fin-formas-mes"></div>
     </div>
+    <div class="card">
+      <h2>Histórico de caixas</h2>
+      <div id="fin-historico"></div>
+    </div>
+
+    <div class="card">
+      <h2>Fluxo de caixa — Contas a pagar</h2>
+      <div class="grid3">
+        <div><label>Descrição</label><input id="cp-desc-pagar" type="text" placeholder="Aluguel, fornecedor..."></div>
+        <div><label>Valor (R$)</label><input id="cp-valor-pagar" type="number" step="0.01"></div>
+        <div><label>Vencimento</label><input id="cp-venc-pagar" type="date"></div>
+      </div>
+      <label>Categoria / centro de custo</label>
+      <input id="cp-cat-pagar" type="text" placeholder="Ex: Insumos, Estrutura, Pessoal...">
+      <button class="btn-primary" onclick="salvarContaPagar()">Lançar conta a pagar</button>
+      <div id="fin-contas-pagar" style="margin-top:14px"></div>
+    </div>
+
+    <div class="card">
+      <h2>Fluxo de caixa — Contas a receber</h2>
+      <p style="font-size:12px;color:var(--muted);margin-top:-6px">Use para recebíveis fora das vendas do PDV (ex: repasse de app de entrega, aluguel de espaço). As vendas do caixa já entram automaticamente no financeiro.</p>
+      <div class="grid3">
+        <div><label>Descrição</label><input id="cr-desc" type="text" placeholder="Repasse iFood, aluguel..."></div>
+        <div><label>Valor (R$)</label><input id="cr-valor" type="number" step="0.01"></div>
+        <div><label>Previsão</label><input id="cr-venc" type="date"></div>
+      </div>
+      <button class="btn-primary" onclick="salvarContaReceber()">Lançar conta a receber</button>
+      <div id="fin-contas-receber" style="margin-top:14px"></div>
+    </div>
+
+    <div class="card">
+      <h2>Importar extrato bancário (.ofx)</h2>
+      <p style="font-size:12px;color:var(--muted);margin-top:-6px">Importa as transações do banco para revisar e lançar como conta a pagar ou a receber.</p>
+      <input id="ofx-arquivo" type="file" accept=".ofx" onchange="processarOfx(event)">
+      <div id="ofx-preview" style="margin-top:10px"></div>
+    </div>
   </div>
 
   <div id="view-estoque" class="view">
@@ -306,6 +342,14 @@ th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;}
       </div>
       <button class="btn-primary" onclick="salvarTaxas()">Salvar taxas</button>
     </div>
+
+    <div class="card" style="border-color:var(--danger)">
+      <h2 style="color:var(--danger)">⚠️ Zerar dados (entregar sistema virgem)</h2>
+      <p style="font-size:12px;color:var(--muted)">Apaga TODOS os pedidos, caixas, perdas, produtos, insumos e contas a pagar/receber deste sistema — use apenas ao entregar para um novo cliente, depois de já ter testado tudo. Usuários e login continuam os mesmos. Essa ação não pode ser desfeita.</p>
+      <label>Digite ZERAR para confirmar</label>
+      <input id="zr-confirma" type="text" placeholder="ZERAR">
+      <button class="btn-danger" onclick="zerarDados()">Apagar todos os dados operacionais</button>
+    </div>
   </div>
 
 </div>
@@ -366,7 +410,7 @@ const TABS = [
 
 let currentUser = null;
 let unsub = [];
-let cache = {usuarios:[], cardapio:[], insumos:[], pedidos:[], caixas:[], perdas:[],
+let cache = {usuarios:[], cardapio:[], insumos:[], pedidos:[], caixas:[], perdas:[], contasPagar:[], contasReceber:[],
   config: {taxas:{dinheiro:0, credito:0, debito:0, pix:0}, impressora:{cabecalho:'DALanchonete', largura:'80mm', rodape:''}, marca:{nome:'DALanchonete', logoUrl:''}}};
 let comandaAtual = [];
 let fichaAtual = [];
@@ -526,6 +570,8 @@ function onCacheUpdate(cacheKey){
   if(cacheKey==='pedidos'){ renderPedidos(); renderCozinha(); renderBalcao(); renderRetirada(); renderCaixa(); renderFinanceiro(); checarNovosProntos(cache.pedidos); }
   if(cacheKey==='caixas') renderFinanceiro();
   if(cacheKey==='perdas'){ renderPerdas(); renderFinanceiro(); }
+  if(cacheKey==='contasPagar'){ renderContasPagar(); renderFinanceiro(); }
+  if(cacheKey==='contasReceber'){ renderContasReceber(); renderFinanceiro(); }
 }
 function subscribeAll(){
   subscribeCollection('usuarios', 'usuarios');
@@ -534,6 +580,8 @@ function subscribeAll(){
   subscribeCollection('pedidos', 'pedidos', 'criado_em');
   subscribeCollection('caixas', 'caixas', 'aberto_em');
   subscribeCollection('perdas', 'perdas', 'data');
+  subscribeCollection('contas_pagar', 'contasPagar', 'criado_em');
+  subscribeCollection('contas_receber', 'contasReceber', 'criado_em');
   const unsubscribeConfig = dbf.collection('configuracoes').doc('geral').onSnapshot(snap=>{
     const d = snap.exists ? snap.data() : {};
     cache.config = {
@@ -689,7 +737,7 @@ function renderPedidos(){
 /* ---------------- COZINHA / BALCÃO ---------------- */
 function renderFilaPreparo(elId, local){
   const el = document.getElementById(elId);
-  const fila = cache.pedidos.filter(p=>p.local===local && (p.status==='pendente' || p.status==='preparo'));
+  const fila = cache.pedidos.filter(p=>(p.local||'cozinha')===local && (p.status==='pendente' || p.status==='preparo'));
   if(!fila.length){ el.innerHTML = '<div class="empty">Fila vazia.</div>'; return; }
   el.innerHTML = fila.map(p=>`
     <div class="card" style="margin-bottom:8px">
@@ -738,6 +786,12 @@ function renderCaixa(){
     <div class="card" style="margin-bottom:8px">
       <div class="row" style="justify-content:space-between"><b>${mesa}</b><span>${brl(total)}</span></div>
       ${todosItens.map(it=>`<div>${it.qtd}x ${it.nome}</div>`).join('')}
+      <div class="row" style="margin-top:10px;align-items:center">
+        <span style="font-size:12px;color:var(--muted)">Dividir conta entre</span>
+        <input id="div-${g}" type="number" min="1" value="1" style="width:60px;margin-bottom:0" oninput="atualizarDivisao('${g}', ${total})">
+        <span style="font-size:12px;color:var(--muted)">pessoa(s)</span>
+        <span id="div-resultado-${g}" style="font-weight:700;color:var(--primary);margin-left:auto"></span>
+      </div>
       <div class="row" style="margin-top:8px">
         <select id="fp-${g}" style="width:auto;margin-bottom:0">
           <option value="dinheiro">Dinheiro</option><option value="credito">Cartão crédito</option><option value="debito">Cartão débito</option><option value="pix">Pix</option>
@@ -746,6 +800,20 @@ function renderCaixa(){
       </div>
     </div>`;
   }).join('');
+  Object.entries(grupos).forEach(([g, peds])=>{
+    const total = peds.reduce((s,p)=>s+p.total,0);
+    atualizarDivisao(g, total);
+  });
+}
+function atualizarDivisao(grupoId, total){
+  const inputEl = document.getElementById('div-'+grupoId);
+  const resEl = document.getElementById('div-resultado-'+grupoId);
+  if(!inputEl || !resEl) return;
+  const n = Math.max(1, parseInt(inputEl.value) || 1);
+  if(n<=1){ resEl.textContent = ''; return; }
+  const porPessoa = total / n;
+  const restoCentavos = Math.round((total - porPessoa*n) * 100);
+  resEl.textContent = `${n}x ${brl(porPessoa)}/pessoa` + (restoCentavos!==0 ? ' (ajuste de centavos na última)' : '');
 }
 async function fecharConta(grupoId){
   const peds = cache.pedidos.filter(p=>(p.grupo_id||p.id)===grupoId && !p.pago);
@@ -803,7 +871,7 @@ function renderFinanceiro(){
         <input id="fin-sangria-motivo" type="text" placeholder="Motivo" style="flex:2">
         <button class="btn-secondary" onclick="registrarSangria()">Registrar sangria</button>
       </div>
-      ${sangrias.length? '<table><tr><th>Hora</th><th>Valor</th><th>Motivo</th></tr>' + sangrias.map(s=>`<tr><td>${new Date(s.hora).toLocaleTimeString('pt-BR')}</td><td>${brl(s.valor)}</td><td>${s.motivo||'-'}</td></tr>`).join('') + '</table>' : ''}
+      ${sangrias.length? '<table><tr><th>Hora</th><th>Valor</th><th>Motivo</th><th></th></tr>' + sangrias.map((s,i)=>`<tr><td>${new Date(s.hora).toLocaleTimeString('pt-BR')}</td><td>${brl(s.valor)}</td><td>${s.motivo||'-'}</td><td><button class="btn-danger btn-sm" onclick="excluirSangria('${caixaAberto.id}', ${i})">Excluir</button></td></tr>`).join('') + '</table>' : ''}
       <h3>Fechamento de caixa</h3>
       <p style="font-size:13px">Valor esperado em caixa: <b>${brl(esperado)}</b></p>
       <div class="row">
@@ -848,6 +916,32 @@ function renderFinanceiro(){
     vendasMes.forEach(p=>{ formasMes[p.forma_pagamento] = (formasMes[p.forma_pagamento]||0) + p.total; });
     renderFormasBar('fin-formas-mes', formasMes);
   }
+  renderHistoricoCaixas();
+}
+function renderHistoricoCaixas(){
+  const el = document.getElementById('fin-historico');
+  if(!el) return;
+  if(!cache.caixas.length){ el.innerHTML = '<div class="empty">Nenhum caixa registrado ainda.</div>'; return; }
+  el.innerHTML = '<table><tr><th>Abertura</th><th>Status</th><th>Abertura R$</th><th>Esperado</th><th>Contado</th><th>Diferença</th><th></th></tr>' +
+    cache.caixas.map(c=>`<tr>
+      <td>${new Date(c.aberto_em).toLocaleString('pt-BR')}</td>
+      <td><span class="pill ${c.status==='aberto'?'pill-preparo':'pill-entregue'}">${c.status}</span></td>
+      <td>${brl(c.valor_abertura)}</td>
+      <td>${c.valor_esperado!=null?brl(c.valor_esperado):'—'}</td>
+      <td id="hist-contado-${c.id}">${c.valor_contado!=null?brl(c.valor_contado):'—'}</td>
+      <td>${c.diferenca!=null?brl(c.diferenca):'—'}</td>
+      <td>${c.status==='fechado' && currentUser.permissoes.admin ? `<button class="btn-secondary btn-sm" onclick="editarFechamento('${c.id}', ${c.valor_esperado||0})">Corrigir</button>` : ''}</td>
+    </tr>`).join('') + '</table>';
+}
+async function editarFechamento(id, esperado){
+  const novoValor = prompt('Novo valor contado nesse fechamento:');
+  if(novoValor===null) return;
+  const contado = parseFloat(novoValor.replace(',','.'));
+  if(isNaN(contado)){ toast('Valor inválido.'); return; }
+  try{
+    await dbf.collection('caixas').doc(id).update({valor_contado:contado, diferenca: contado-esperado});
+    toast('Fechamento corrigido.');
+  }catch(e){ console.error(e); toast('Erro ao corrigir.'); }
 }
 function renderFormasBar(elId, formas){
   const labels = {dinheiro:'Dinheiro', credito:'Crédito', debito:'Débito', pix:'Pix'};
@@ -874,6 +968,16 @@ async function registrarSangria(){
     toast('Sangria registrada.');
   }catch(e){ console.error(e); toast('Erro ao registrar sangria.'); }
 }
+async function excluirSangria(caixaId, index){
+  const caixa = cache.caixas.find(c=>c.id===caixaId);
+  if(!caixa) return;
+  const sangrias = [...(caixa.sangrias||[])];
+  sangrias.splice(index,1);
+  try{
+    await dbf.collection('caixas').doc(caixaId).update({sangrias});
+    toast('Sangria excluída.');
+  }catch(e){ console.error(e); toast('Erro ao excluir.'); }
+}
 async function fecharCaixa(id, esperado){
   const contado = parseFloat(document.getElementById('fin-fechamento-valor').value);
   if(isNaN(contado)){ toast('Informe o valor contado.'); return; }
@@ -881,6 +985,147 @@ async function fecharCaixa(id, esperado){
     await dbf.collection('caixas').doc(id).update({status:'fechado', fechado_em:new Date().toISOString(), valor_esperado:esperado, valor_contado:contado, diferenca: contado-esperado});
     toast('Caixa fechado. Diferença: ' + brl(contado-esperado));
   }catch(e){ console.error(e); toast('Erro ao fechar caixa.'); }
+}
+
+/* ---------------- FLUXO DE CAIXA: CONTAS A PAGAR / RECEBER ---------------- */
+async function salvarContaPagar(){
+  const descricao = document.getElementById('cp-desc-pagar').value.trim();
+  const valor = parseFloat(document.getElementById('cp-valor-pagar').value);
+  const vencimento = document.getElementById('cp-venc-pagar').value;
+  const categoria = document.getElementById('cp-cat-pagar').value.trim();
+  if(!descricao || !valor){ toast('Informe descrição e valor.'); return; }
+  try{
+    await dbf.collection('contas_pagar').add({descricao, valor, vencimento, categoria, pago:false, criado_em:new Date().toISOString()});
+    ['cp-desc-pagar','cp-valor-pagar','cp-venc-pagar','cp-cat-pagar'].forEach(id=>document.getElementById(id).value='');
+    toast('Conta a pagar lançada.');
+  }catch(e){ console.error(e); toast('Erro ao lançar.'); }
+}
+function renderContasPagar(){
+  const el = document.getElementById('fin-contas-pagar');
+  if(!el) return;
+  if(!cache.contasPagar.length){ el.innerHTML = '<div class="empty">Nenhuma conta a pagar lançada.</div>'; return; }
+  const pendentes = cache.contasPagar.filter(c=>!c.pago).reduce((s,c)=>s+c.valor,0);
+  el.innerHTML = `<p style="font-size:13px"><b>Total pendente: ${brl(pendentes)}</b></p>` +
+    '<table><tr><th>Descrição</th><th>Categoria</th><th>Vencimento</th><th>Valor</th><th>Status</th><th></th></tr>' +
+    cache.contasPagar.map(c=>`<tr>
+      <td>${c.descricao}</td><td>${c.categoria||'-'}</td><td>${c.vencimento?new Date(c.vencimento+'T00:00').toLocaleDateString('pt-BR'):'-'}</td>
+      <td>${brl(c.valor)}</td>
+      <td>${c.pago?'<span class="pill pill-pago">pago</span>':'<span class="pill pill-pendente">pendente</span>'}</td>
+      <td class="row">
+        ${!c.pago?`<button class="btn-secondary btn-sm" onclick="marcarContaPagar('${c.id}')">Marcar pago</button>`:''}
+        <button class="btn-danger btn-sm" onclick="excluirContaPagar('${c.id}')">Excluir</button>
+      </td>
+    </tr>`).join('') + '</table>';
+}
+async function marcarContaPagar(id){ try{ await dbf.collection('contas_pagar').doc(id).update({pago:true, pago_em:new Date().toISOString()}); }catch(e){ console.error(e); } }
+async function excluirContaPagar(id){ try{ await dbf.collection('contas_pagar').doc(id).delete(); }catch(e){ console.error(e); } }
+
+async function salvarContaReceber(){
+  const descricao = document.getElementById('cr-desc').value.trim();
+  const valor = parseFloat(document.getElementById('cr-valor').value);
+  const vencimento = document.getElementById('cr-venc').value;
+  if(!descricao || !valor){ toast('Informe descrição e valor.'); return; }
+  try{
+    await dbf.collection('contas_receber').add({descricao, valor, vencimento, recebido:false, criado_em:new Date().toISOString()});
+    ['cr-desc','cr-valor','cr-venc'].forEach(id=>document.getElementById(id).value='');
+    toast('Conta a receber lançada.');
+  }catch(e){ console.error(e); toast('Erro ao lançar.'); }
+}
+function renderContasReceber(){
+  const el = document.getElementById('fin-contas-receber');
+  if(!el) return;
+  if(!cache.contasReceber.length){ el.innerHTML = '<div class="empty">Nenhuma conta a receber lançada.</div>'; return; }
+  const pendentes = cache.contasReceber.filter(c=>!c.recebido).reduce((s,c)=>s+c.valor,0);
+  el.innerHTML = `<p style="font-size:13px"><b>Total a receber: ${brl(pendentes)}</b></p>` +
+    '<table><tr><th>Descrição</th><th>Previsão</th><th>Valor</th><th>Status</th><th></th></tr>' +
+    cache.contasReceber.map(c=>`<tr>
+      <td>${c.descricao}</td><td>${c.vencimento?new Date(c.vencimento+'T00:00').toLocaleDateString('pt-BR'):'-'}</td>
+      <td>${brl(c.valor)}</td>
+      <td>${c.recebido?'<span class="pill pill-pago">recebido</span>':'<span class="pill pill-pendente">pendente</span>'}</td>
+      <td class="row">
+        ${!c.recebido?`<button class="btn-secondary btn-sm" onclick="marcarContaReceber('${c.id}')">Marcar recebido</button>`:''}
+        <button class="btn-danger btn-sm" onclick="excluirContaReceber('${c.id}')">Excluir</button>
+      </td>
+    </tr>`).join('') + '</table>';
+}
+async function marcarContaReceber(id){ try{ await dbf.collection('contas_receber').doc(id).update({recebido:true, recebido_em:new Date().toISOString()}); }catch(e){ console.error(e); } }
+async function excluirContaReceber(id){ try{ await dbf.collection('contas_receber').doc(id).delete(); }catch(e){ console.error(e); } }
+
+/* ---------------- IMPORTAÇÃO OFX ---------------- */
+let ofxLancamentos = [];
+function processarOfx(evt){
+  const file = evt.target.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = e=>{
+    try{
+      ofxLancamentos = parseOfx(e.target.result);
+      renderOfxPreview();
+    }catch(err){ console.error(err); toast('Não consegui ler esse arquivo OFX.'); }
+  };
+  reader.readAsText(file);
+}
+function parseOfx(texto){
+  const blocos = texto.split(/<STMTTRN>/i).slice(1);
+  return blocos.map((b,i)=>{
+    const campo = (tag)=>{ const m = b.match(new RegExp('<'+tag+'>([^<\\r\\n]+)','i')); return m ? m[1].trim() : ''; };
+    const valor = parseFloat(campo('TRNAMT')) || 0;
+    const dataRaw = campo('DTPOSTED');
+    const data = dataRaw ? `${dataRaw.slice(0,4)}-${dataRaw.slice(4,6)}-${dataRaw.slice(6,8)}` : '';
+    const descricao = campo('MEMO') || campo('NAME') || 'Transação importada';
+    return { id:'ofx_'+i, data, descricao, valor, tipo: valor<0 ? 'pagar' : 'receber', incluir:true };
+  }).filter(l=>l.valor!==0);
+}
+function renderOfxPreview(){
+  const el = document.getElementById('ofx-preview');
+  if(!ofxLancamentos.length){ el.innerHTML = '<div class="empty">Nenhuma transação encontrada nesse arquivo.</div>'; return; }
+  el.innerHTML = '<table><tr><th></th><th>Data</th><th>Descrição</th><th>Valor</th><th>Lançar como</th></tr>' +
+    ofxLancamentos.map((l,i)=>`<tr>
+      <td><input type="checkbox" ${l.incluir?'checked':''} onchange="ofxLancamentos[${i}].incluir=this.checked"></td>
+      <td>${l.data?new Date(l.data+'T00:00').toLocaleDateString('pt-BR'):'-'}</td>
+      <td>${l.descricao}</td>
+      <td>${brl(Math.abs(l.valor))}</td>
+      <td><select onchange="ofxLancamentos[${i}].tipo=this.value" style="width:auto;margin-bottom:0">
+        <option value="pagar" ${l.tipo==='pagar'?'selected':''}>Conta a pagar</option>
+        <option value="receber" ${l.tipo==='receber'?'selected':''}>Conta a receber</option>
+      </select></td>
+    </tr>`).join('') +
+    '</table><button class="btn-primary" style="margin-top:10px" onclick="importarOfx()">Importar selecionados</button>';
+}
+async function importarOfx(){
+  const selecionados = ofxLancamentos.filter(l=>l.incluir);
+  if(!selecionados.length){ toast('Nenhuma transação selecionada.'); return; }
+  try{
+    for(const l of selecionados){
+      if(l.tipo==='pagar'){
+        await dbf.collection('contas_pagar').add({descricao:l.descricao, valor:Math.abs(l.valor), vencimento:l.data, categoria:'Importado OFX', pago:false, criado_em:new Date().toISOString()});
+      } else {
+        await dbf.collection('contas_receber').add({descricao:l.descricao, valor:Math.abs(l.valor), vencimento:l.data, recebido:false, criado_em:new Date().toISOString()});
+      }
+    }
+    ofxLancamentos = [];
+    document.getElementById('ofx-preview').innerHTML = '';
+    document.getElementById('ofx-arquivo').value = '';
+    toast(selecionados.length + ' transação(ões) importada(s).');
+  }catch(e){ console.error(e); toast('Erro ao importar.'); }
+}
+
+/* ---------------- ZERAR DADOS (entregar sistema virgem) ---------------- */
+async function zerarDados(){
+  if(document.getElementById('zr-confirma').value.trim().toUpperCase() !== 'ZERAR'){
+    toast('Digite ZERAR no campo de confirmação.'); return;
+  }
+  if(!confirm('Isso vai apagar PERMANENTEMENTE todos os pedidos, caixas, perdas, produtos, insumos, contas a pagar/receber e configurações. Confirma?')) return;
+  const colecoes = ['pedidos','caixas','perdas','cardapio','insumos','contas_pagar','contas_receber'];
+  try{
+    for(const nome of colecoes){
+      const snap = await dbf.collection(nome).get();
+      for(const doc of snap.docs){ await dbf.collection(nome).doc(doc.id).delete(); }
+    }
+    await dbf.collection('configuracoes').doc('geral').delete();
+    document.getElementById('zr-confirma').value='';
+    toast('Sistema zerado. Pronto para o novo cliente.');
+  }catch(e){ console.error(e); toast('Erro ao zerar dados.'); }
 }
 
 /* ---------------- ESTOQUE ---------------- */
