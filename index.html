@@ -1223,11 +1223,25 @@ function renderAdmin(){
   document.getElementById('ad-perms-new').innerHTML = permCheckboxesHtml('new', {});
   const el = document.getElementById('ad-lista');
   if(!cache.usuarios.length){ el.innerHTML = '<div class="empty">Nenhum usuário.</div>'; return; }
-  el.innerHTML = cache.usuarios.map(u=>`
+  el.innerHTML = cache.usuarios.map(u=>{
+    if((u.usuario||'').toLowerCase()==='admin'){
+      return `
+      <div class="card" style="margin-bottom:8px;opacity:.85">
+        <div class="row" style="justify-content:space-between">
+          <b>🔒 ${u.nome||u.usuario} <span style="color:var(--muted);font-weight:400">(login: ${u.usuario})</span></b>
+          <span class="pill pill-entregue">fixo</span>
+        </div>
+        <p style="font-size:12px;color:var(--muted);margin:8px 0 0">Usuário administrador principal — não pode ser alterado, desativado ou excluído por aqui.</p>
+      </div>`;
+    }
+    return `
     <div class="card" style="margin-bottom:8px">
       <div class="row" style="justify-content:space-between">
         <span style="color:var(--muted);font-size:12px">login: ${u.usuario}</span>
-        <button class="btn-danger btn-sm" onclick="desativarUsuario('${u.id}')">Desativar</button>
+        <div class="row">
+          <button class="btn-secondary btn-sm" onclick="desativarUsuario('${u.id}')">Desativar</button>
+          <button class="btn-danger btn-sm" onclick="excluirUsuarioDefinitivo('${u.id}','${u.usuario}')">🗑 Excluir</button>
+        </div>
       </div>
       <div class="row" style="margin-top:6px">
         <input id="nome-${u.id}" type="text" value="${u.nome||u.usuario}" style="flex:2;margin-bottom:0">
@@ -1239,7 +1253,8 @@ function renderAdmin(){
       </div>
       <div class="perm-grid">${permCheckboxesHtml('u-'+u.id, u.permissoes)}</div>
       <button class="btn-secondary btn-sm" onclick="salvarPermissoes('${u.id}')">Salvar permissões</button>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 }
 async function salvarNome(id){
   const nome = document.getElementById('nome-'+id).value.trim();
@@ -1259,6 +1274,7 @@ async function criarUsuario(){
   if(senha.length<6){ toast('A senha precisa ter ao menos 6 caracteres.'); return; }
   const usuario = nomeDigitado.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,'.').replace(/[^a-z0-9._-]/g,'');
   if(!usuario){ toast('Login inválido, use letras e números.'); return; }
+  if(usuario==='admin'){ toast('Esse login é reservado para o administrador fixo.'); return; }
   const perms = {}; PERMS.forEach(p=>perms[p.key] = document.getElementById('new-'+p.key).checked);
   const email = usuario + '@dalanchonete.com';
   const secAuth = getSecondaryAuth();
@@ -1285,6 +1301,13 @@ async function desativarUsuario(id){
   if(id===currentUser.id){ toast('Você não pode desativar seu próprio usuário.'); return; }
   try{ await dbf.collection('usuarios').doc(id).update({permissoes:{}}); toast('Usuário desativado (sem permissões).'); }
   catch(e){ console.error(e); toast('Erro ao desativar.'); }
+}
+async function excluirUsuarioDefinitivo(id, usuario){
+  if(usuario==='admin'){ toast('O administrador fixo não pode ser excluído.'); return; }
+  if(id===currentUser.id){ toast('Você não pode excluir seu próprio usuário.'); return; }
+  if(!confirm('Excluir definitivamente o login "'+usuario+'"? Essa ação não pode ser desfeita.')) return;
+  try{ await dbf.collection('usuarios').doc(id).delete(); toast('Usuário excluído.'); }
+  catch(e){ console.error(e); toast('Erro ao excluir usuário.'); }
 }
 </script>
 </body>
